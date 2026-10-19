@@ -14,26 +14,6 @@
 <script>tailwind.config={theme:{extend:{colors:{lg:'#A50034',lgd:'#2B2B2B'}}}}</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-<!--
-=== SUPABASE SETUP (run once in SQL editor) ===
-create table check_ins (
-  id bigint generated always as identity primary key,
-  client_id uuid unique not null,
-  promoter_id text, promoter_name text,
-  branch_id text, branch_name text,
-  action_type text check (action_type in ('check_in','check_out')),
-  captured_at timestamptz, work_date date,
-  latitude double precision, longitude double precision,
-  accuracy_m real, distance_m real, inside_geofence boolean,
-  ip_address text, ip_country text, ip_city text,
-  risk_score int, flags text, photo_url text,
-  was_offline boolean, device_info text,
-  synced_at timestamptz default now());
-alter table check_ins enable row level security;
-create policy "anon insert" on check_ins for insert to anon with check (true);
--- Storage: create a PUBLIC bucket named "selfies" + policy allowing anon INSERT only.
--- Do NOT grant anon SELECT on check_ins; read data via dashboard / service role / Power BI.
--->
 <style>
 html,body{height:100%;overscroll-behavior:none}
 body{font-family:'Segoe UI',Tahoma,system-ui,sans-serif;background:#e9e9ec;-webkit-tap-highlight-color:transparent;user-select:none}
@@ -138,8 +118,8 @@ select,input{font-size:16px}
 <script>
 /* ===================== CONFIG — EDIT HERE ===================== */
 const CFG = {
-  SUPABASE_URL: 'YOUR_SUPABASE_PROJECT_URL',
-  SUPABASE_KEY: 'YOUR_SUPABASE_ANON_KEY',
+  SUPABASE_URL: 'https://rcfozjwtotnofpgbczta.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_6nrRGFTuwJRe9G1feWz1DA_cZffN_yw',
   TABLE: 'check_ins',
   BUCKET: 'selfies',
   MAX_ACCURACY_M: 80,      // reject GPS fixes worse than this
@@ -198,8 +178,7 @@ $('langBtn').onclick=toggleLang;
 /* ===================== CLOCK ===================== */
 function tick(){
   const l=I18N[lang].loc,d=new Date();
-  $('clock').textContent=d.toLocaleTimeString(l,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
-  $('date').textContent=d.toLocaleDateString(l,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  $('clock').textContent=d.toLocaleTimeString(l,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});$('date').textContent=d.toLocaleDateString(l,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
 }
 setInterval(tick,1000);
 
@@ -218,7 +197,7 @@ const sb=CONFIGURED?supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_KEY,{aut
 
 /* ===================== PROFILE / UI INIT ===================== */
 const sel=$('branch');CFG.BRANCHES.forEach(b=>sel.add(new Option(b.name,b.id)));
-['pName','pId'].forEach(k=>{$(k).value=localStorage['lg_'+k]||'';$(k).oninput=e=>localStorage['lg_'+k]=e.target.value.trim()});
+['pName','pId'].forEach(k=>{$(k).value=localStorage['lg_'+k]\vert{}\vert{}'';$(k).oninput=e=>localStorage['lg_'+k]=e.target.value.trim()});
 sel.value=localStorage.lg_branch||CFG.BRANCHES[0].id;sel.onchange=()=>localStorage.lg_branch=sel.value;
 const branch=()=>CFG.BRANCHES.find(b=>b.id===sel.value);
 function renderLast(){const l=JSON.parse(localStorage.lg_last||'null');
@@ -251,8 +230,7 @@ async function openCapture(type){
   const name=$('pName').value.trim(),id=$('pId').value.trim();
   if(!name||!id)return toast('tProfile','warn');
   S.type=type;S.gps=null;S.camOk=false;S.checks={};$('coords').textContent='--';$('distTxt').textContent='';
-  $('sheetTitle').textContent=type==='check_out'?T('outTitle'):T('inTitle');
-  $('sheet').classList.add('open');renderChecks();gate();
+  $('sheetTitle').textContent=type==='check_out'?T('outTitle'):T('inTitle');$('sheet').classList.add('open');renderChecks();gate();
   if(S.ip)setCheck('ip','ok',S.ip.ip+(S.ip.cc?' · '+S.ip.cc:'')); else {fetchIP()}
   startCam();setTimeout(startGPS,350);
 }
@@ -290,7 +268,7 @@ function analyse(samples,br){
 async function startGPS(){
   setCheck('gps','load','wait');setCheck('geo','load','wait');
   if(!S.map){S.map=L.map('map',{zoomControl:false,attributionControl:false}).setView([30.05,31.25],14);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png').addTo(S.map)}
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(S.map)}
   $('map').classList.add('on');setTimeout(()=>S.map.invalidateSize(),450);
   const br=branch();
   try{
