@@ -14,6 +14,36 @@
 <script>tailwind.config={theme:{extend:{colors:{lg:'#A50034',lgd:'#2B2B2B'}}}}</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<!--
+=== SUPABASE SETUP (SQL editor) ===
+-- New table:
+create table if not exists check_ins (
+  id bigint generated always as identity primary key,
+  client_id uuid unique, promoter_id text, promoter_name text,
+  branch_id text, branch_name text, action_type text,
+  timestamp timestamptz, captured_at timestamptz, work_date date,
+  latitude double precision, longitude double precision,
+  accuracy_m real, distance_m real, inside_geofence boolean,
+  ip_address text, ip_country text, ip_city text,
+  risk_score int, flags text, photo text,
+  was_offline boolean, device_info text,
+  synced_at timestamptz default now());
+-- Already have a table? Add the missing columns:
+alter table check_ins
+  add column if not exists client_id uuid unique, add column if not exists promoter_id text,
+  add column if not exists promoter_name text, add column if not exists branch_id text,
+  add column if not exists branch_name text, add column if not exists captured_at timestamptz,
+  add column if not exists work_date date, add column if not exists accuracy_m real,
+  add column if not exists distance_m real, add column if not exists inside_geofence boolean,
+  add column if not exists ip_country text, add column if not exists ip_city text,
+  add column if not exists risk_score int, add column if not exists flags text,
+  add column if not exists was_offline boolean, add column if not exists device_info text,
+  add column if not exists photo text;
+-- Security: anon may only INSERT
+alter table check_ins enable row level security;
+drop policy if exists "anon insert" on check_ins;
+create policy "anon insert" on check_ins for insert to anon with check (true);
+-->
 <style>
 html,body{height:100%;overscroll-behavior:none}
 body{font-family:'Segoe UI',Tahoma,system-ui,sans-serif;background:#e9e9ec;-webkit-tap-highlight-color:transparent;user-select:none}
@@ -121,7 +151,6 @@ const CFG = {
   SUPABASE_URL: 'https://rcfozjwtotnofpgbczta.supabase.co',
   SUPABASE_KEY: 'sb_publishable_6nrRGFTuwJRe9G1feWz1DA_cZffN_yw',
   TABLE: 'check_ins',
-  BUCKET: 'selfies',
   MAX_ACCURACY_M: 80,      // reject GPS fixes worse than this
   BLOCK_RISK: 70,          // block submission at/above this risk score
   GPS_SAMPLE_MS: 6000,     // sampling window
@@ -178,7 +207,8 @@ $('langBtn').onclick=toggleLang;
 /* ===================== CLOCK ===================== */
 function tick(){
   const l=I18N[lang].loc,d=new Date();
-  $('clock').textContent=d.toLocaleTimeString(l,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});$('date').textContent=d.toLocaleDateString(l,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  $('clock').textContent=d.toLocaleTimeString(l,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  $('date').textContent=d.toLocaleDateString(l,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
 }
 setInterval(tick,1000);
 
@@ -197,7 +227,7 @@ const sb=CONFIGURED?supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_KEY,{aut
 
 /* ===================== PROFILE / UI INIT ===================== */
 const sel=$('branch');CFG.BRANCHES.forEach(b=>sel.add(new Option(b.name,b.id)));
-['pName','pId'].forEach(k=>{$(k).value=localStorage['lg_'+k]\vert{}\vert{}'';$(k).oninput=e=>localStorage['lg_'+k]=e.target.value.trim()});
+['pName','pId'].forEach(k=>{$(k).value=localStorage['lg_'+k]||'';$(k).oninput=e=>localStorage['lg_'+k]=e.target.value.trim()});
 sel.value=localStorage.lg_branch||CFG.BRANCHES[0].id;sel.onchange=()=>localStorage.lg_branch=sel.value;
 const branch=()=>CFG.BRANCHES.find(b=>b.id===sel.value);
 function renderLast(){const l=JSON.parse(localStorage.lg_last||'null');
@@ -230,7 +260,8 @@ async function openCapture(type){
   const name=$('pName').value.trim(),id=$('pId').value.trim();
   if(!name||!id)return toast('tProfile','warn');
   S.type=type;S.gps=null;S.camOk=false;S.checks={};$('coords').textContent='--';$('distTxt').textContent='';
-  $('sheetTitle').textContent=type==='check_out'?T('outTitle'):T('inTitle');$('sheet').classList.add('open');renderChecks();gate();
+  $('sheetTitle').textContent=type==='check_out'?T('outTitle'):T('inTitle');
+  $('sheet').classList.add('open');renderChecks();gate();
   if(S.ip)setCheck('ip','ok',S.ip.ip+(S.ip.cc?' · '+S.ip.cc:'')); else {fetchIP()}
   startCam();setTimeout(startGPS,350);
 }
@@ -267,8 +298,9 @@ function analyse(samples,br){
 }
 async function startGPS(){
   setCheck('gps','load','wait');setCheck('geo','load','wait');
-  if(!S.map){S.map=L.map('map',{zoomControl:false,attributionControl:false}).setView([30.05,31.25],14);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(S.map)}
+  if(!S.map){S.map=L.map('map',{zoomControl:false}).setView([30.05,31.25],14);
+    S.map.attributionControl.setPrefix(false);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(S.map)}
   $('map').classList.add('on');setTimeout(()=>S.map.invalidateSize(),450);
   const br=branch();
   try{
@@ -294,7 +326,6 @@ async function snapPhoto(){
   let q=.7,url;do{url=c.toDataURL('image/jpeg',q);q-=.08}while(url.length*.75/1024>CFG.PHOTO_MAX_KB&&q>.25);
   return url;
 }
-const toBlob=u=>{const [m,d]=u.split(','),bin=atob(d),a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return new Blob([a],{type:'image/jpeg'})};
 
 /* ===================== QUEUE / SYNC ===================== */
 const getQ=()=>{try{return JSON.parse(localStorage.lg_queue||'[]')}catch{return[]}};
@@ -302,12 +333,14 @@ function setQ(q){try{localStorage.lg_queue=JSON.stringify(q);renderPending();ret
 function renderPending(){const n=getQ().length;$('pending').classList.toggle('hidden',!n);$('pendN').textContent=n}
 async function sendRecord(r,wasOffline){
   if(!sb)throw new Error('demo');
-  const path=`${r.branch_id}/${r.work_date}/${r.client_id}.jpg`;
-  const up=await sb.storage.from(CFG.BUCKET).upload(path,toBlob(r.photo),{contentType:'image/jpeg',upsert:true});
-  if(up.error)throw up.error;
-  const {photo,...row}=r;row.photo_url=sb.storage.from(CFG.BUCKET).getPublicUrl(path).data.publicUrl;row.was_offline=wasOffline;
-  const {error}=await sb.from(CFG.TABLE).upsert(row,{onConflict:'client_id',ignoreDuplicates:true});
-  if(error)throw error;
+  // Full record (photo = compressed base64 data-URL) in one insert
+  let {error}=await sb.from(CFG.TABLE).upsert({...r,was_offline:wasOffline},{onConflict:'client_id',ignoreDuplicates:true});
+  // Fallback: table has only the basic columns -> insert the core fields
+  if(error&&/column|schema cache|42703|42P10|PGRST20/i.test((error.code||'')+' '+(error.message||''))){
+    console.warn('Extended insert failed, using core columns:',error);
+    ({error}=await sb.from(CFG.TABLE).insert([{action_type:r.action_type,timestamp:r.captured_at,latitude:r.latitude,longitude:r.longitude,ip_address:r.ip_address,photo:r.photo}]));
+  }
+  if(error){console.error('Supabase error:',error);throw error}
 }
 let syncing=false;
 async function syncQueue(manual){
