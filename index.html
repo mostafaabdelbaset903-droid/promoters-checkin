@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#A50034">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>LG Promoter</title>
+<link rel="manifest" href='data:application/manifest+json,{"name":"LG Promoter","short_name":"LG Promoter","display":"standalone","start_url":".","background_color":"#A50034","theme_color":"#A50034","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 512 512%27%3E%3Crect width=%27512%27 height=%27512%27 fill=%27%23A50034%27/%3E%3Ctext x=%27256%27 y=%27330%27 font-size=%27240%27 font-family=%27Arial%27 font-weight=%27900%27 fill=%27white%27 text-anchor=%27middle%27%3ELG%3C/text%3E%3C/svg%3E","sizes":"512x512","type":"image/svg+xml"}]}'>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>tailwind.config={theme:{extend:{colors:{lg:'#A50034',lgd:'#2B2B2B'}}}}</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<!--
+=== SUPABASE SETUP (run once in SQL editor) ===
+create table check_ins (
+  id bigint generated always as identity primary key,
+  client_id uuid unique not null,
+  promoter_id text, promoter_name text,
+  branch_id text, branch_name text,
+  action_type text check (action_type in ('check_in','check_out')),
+  captured_at timestamptz, work_date date,
+  latitude double precision, longitude double precision,
+  accuracy_m real, distance_m real, inside_geofence boolean,
+  ip_address text, ip_country text, ip_city text,
+  risk_score int, flags text, photo_url text,
+  was_offline boolean, device_info text,
+  synced_at timestamptz default now());
+alter table check_ins enable row level security;
+create policy "anon insert" on check_ins for insert to anon with check (true);
+-- Storage: create a PUBLIC bucket named "selfies" + policy allowing anon INSERT only.
+-- Do NOT grant anon SELECT on check_ins; read data via dashboard / service role / Power BI.
+-->
+<style>
+html,body{height:100%;overscroll-behavior:none}
+body{font-family:'Segoe UI',Tahoma,system-ui,sans-serif;background:#e9e9ec;-webkit-tap-highlight-color:transparent;user-select:none}
+.app{max-width:480px;margin:0 auto;min-height:100%;background:#f6f6f8;position:relative;overflow:hidden;padding-bottom:env(safe-area-inset-bottom)}
+.hdr{padding-top:calc(env(safe-area-inset-top) + 1rem)}
+.press{transition:transform .15s,opacity .2s,box-shadow .2s}.press:active:not(:disabled){transform:scale(.97)}
+.press:disabled{opacity:.45}
+.sheet{position:fixed;inset:0;max-width:480px;margin:0 auto;background:#f6f6f8;z-index:30;transform:translateY(100%);transition:transform .4s cubic-bezier(.22,1,.36,1);display:flex;flex-direction:column}
+.sheet.open{transform:none}
+#cam{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+#map{height:150px;border-radius:14px;z-index:1;opacity:0;transition:opacity .6s}#map.on{opacity:1}
+.spin{width:16px;height:16px;border:2.5px solid #ddd;border-top-color:#A50034;border-radius:50%;animation:sp .8s linear infinite;display:inline-block}
+@keyframes sp{to{transform:rotate(360deg)}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(165,0,52,.45)}100%{box-shadow:0 0 0 14px rgba(165,0,52,0)}}
+.pulse{animation:pulse 1.8s infinite}
+.fade{animation:fd .35s ease both}@keyframes fd{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+#toasts{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:0;right:0;z-index:100;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.toast{pointer-events:auto;min-width:240px;max-width:92%;padding:12px 16px;border-radius:14px;color:#fff;font-weight:600;font-size:14px;box-shadow:0 10px 25px rgba(0,0,0,.25);animation:ti .35s cubic-bezier(.22,1,.36,1) both}
+.toast.out{animation:to .3s ease forwards}
+@keyframes ti{from{opacity:0;transform:translateY(-20px) scale(.95)}}@keyframes to{to{opacity:0;transform:translateY(-14px)}}
+select,input{font-size:16px}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+
+<div class="app">
+  <!-- Offline banner -->
+  <div id="offbar" class="hidden bg-amber-500 text-white text-xs font-bold text-center py-1.5 relative z-20"><span data-i18n="offline"></span></div>
+
+  <!-- HEADER -->
+  <header class="hdr bg-gradient-to-br from-lg to-[#7a0027] text-white px-5 pb-16 rounded-b-[2rem] relative">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <div class="w-10 h-10 rounded-full bg-white text-lg font-black text-lg flex items-center justify-center text-lg" style="color:#A50034">LG</div>
+        <div><p class="font-extrabold leading-tight" data-i18n="appName"></p><p class="text-[11px] opacity-80" data-i18n="tagline"></p></div>
+      </div>
+      <button id="langBtn" class="press bg-white/20 border border-white/30 backdrop-blur px-3 py-1.5 rounded-full text-xs font-bold"></button>
+    </div>
+    <div class="mt-5 text-center">
+      <p id="clock" class="text-4xl font-light tracking-wider tabular-nums" dir="ltr">--:--:--</p>
+      <p id="date" class="text-sm opacity-90 mt-1">--</p>
+    </div>
+  </header>
+
+  <!-- HOME -->
+  <main class="px-4 -mt-10 relative z-10 space-y-3 pb-8">
+    <section class="bg-white rounded-2xl shadow-lg p-4 space-y-3 fade">
+      <div class="grid grid-cols-2 gap-2">
+        <label class="block"><span class="text-[11px] font-bold text-gray-500" data-i18n="pName"></span>
+          <input id="pName" class="w-full mt-1 bg-gray-100 rounded-xl px-3 py-2.5 outline-none focus:ring-2 ring-lg/40 transition" autocomplete="off"></label>
+        <label class="block"><span class="text-[11px] font-bold text-gray-500" data-i18n="pId"></span>
+          <input id="pId" class="w-full mt-1 bg-gray-100 rounded-xl px-3 py-2.5 outline-none focus:ring-2 ring-lg/40 transition" dir="ltr" autocomplete="off"></label>
+      </div>
+      <label class="block"><span class="text-[11px] font-bold text-gray-500" data-i18n="branch"></span>
+        <select id="branch" class="w-full mt-1 bg-gray-100 rounded-xl px-3 py-2.5 outline-none focus:ring-2 ring-lg/40"></select></label>
+      <div class="flex items-center justify-between text-xs">
+        <span class="bg-gray-100 rounded-full px-3 py-1 font-mono font-bold" dir="ltr">IP <span id="ipHome" class="text-lg" style="color:#A50034">…</span></span>
+        <span id="lastAct" class="text-gray-500 font-semibold"></span>
+      </div>
+    </section>
+
+    <div id="pending" class="hidden bg-amber-50 border border-amber-200 rounded-2xl p-3 flex items-center justify-between fade">
+      <span class="text-sm font-bold text-amber-800"><span id="pendN">0</span> <span data-i18n="pending"></span></span>
+      <button onclick="syncQueue(true)" class="press bg-amber-500 text-white rounded-lg px-3 py-1.5 text-xs font-bold" data-i18n="sync"></button>
+    </div>
+
+    <button onclick="openCapture('check_in')" class="press w-full bg-lg text-white rounded-2xl py-5 text-lg font-extrabold shadow-lg shadow-lg/30 flex items-center justify-center gap-3 pulse" style="box-shadow:0 10px 20px rgba(165,0,52,.3)">
+      <span class="text-2xl">⮕</span><span data-i18n="checkIn"></span></button>
+    <button onclick="openCapture('check_out')" class="press w-full bg-lgd text-white rounded-2xl py-5 text-lg font-extrabold shadow-lg flex items-center justify-center gap-3">
+      <span class="text-2xl">⬅</span><span data-i18n="checkOut"></span></button>
+    <p class="text-center text-[11px] text-gray-400 pt-2" data-i18n="secNote"></p>
+  </main>
+</div>
+
+<!-- CAPTURE SHEET -->
+<div id="sheet" class="sheet">
+  <div class="bg-white px-4 py-3 flex items-center justify-between shadow-sm" style="padding-top:calc(env(safe-area-inset-top) + .75rem)">
+    <h2 id="sheetTitle" class="font-extrabold text-lg text-lgd"></h2>
+    <button onclick="closeCapture()" class="press w-9 h-9 rounded-full bg-gray-100 font-bold text-gray-500">✕</button>
+  </div>
+  <div class="flex-1 overflow-y-auto p-4 space-y-3">
+    <div class="relative rounded-2xl overflow-hidden bg-black h-64 shadow-lg">
+      <video id="cam" autoplay playsinline muted></video>
+      <div class="absolute inset-0 flex items-center justify-center pointer-events-none"><div class="w-40 h-52 rounded-[50%] border-2 border-dashed border-white/70"></div></div>
+      <span class="absolute top-2 start-2 bg-black/50 text-white text-[10px] font-bold px-2 py-1 rounded-full">● <span data-i18n="liveOnly"></span></span>
+    </div>
+    <div class="bg-white rounded-2xl p-3 shadow-sm space-y-2">
+      <div id="map"></div>
+      <div class="flex justify-between text-[10px] font-mono text-gray-500" dir="ltr"><span id="coords">--</span><span id="distTxt"></span></div>
+    </div>
+    <ul id="checks" class="bg-white rounded-2xl p-3 shadow-sm space-y-2 text-sm font-semibold"></ul>
+  </div>
+  <div class="bg-white p-4 rounded-t-3xl shadow-[0_-4px_20px_rgba(0,0,0,.06)]" style="padding-bottom:calc(env(safe-area-inset-bottom) + 1rem)">
+    <button id="submit" onclick="submitRecord()" disabled class="press w-full bg-lg text-white rounded-2xl py-4 text-lg font-extrabold flex items-center justify-center gap-2"><span id="submitTxt" data-i18n="submit"></span></button>
+  </div>
+</div>
+
+<!-- Busy overlay -->
+<div id="busy" class="hidden fixed inset-0 z-50 bg-white/85 backdrop-blur-sm flex-col items-center justify-center"><div class="spin" style="width:42px;height:42px"></div><p id="busyTxt" class="mt-3 font-bold text-gray-700"></p></div>
+
+<script>
+/* ===================== CONFIG — EDIT HERE ===================== */
+const CFG = {
+  SUPABASE_URL: 'YOUR_SUPABASE_PROJECT_URL',
+  SUPABASE_KEY: 'YOUR_SUPABASE_ANON_KEY',
+  TABLE: 'check_ins',
+  BUCKET: 'selfies',
+  MAX_ACCURACY_M: 80,      // reject GPS fixes worse than this
+  BLOCK_RISK: 70,          // block submission at/above this risk score
+  GPS_SAMPLE_MS: 6000,     // sampling window
+  PHOTO_W: 640, PHOTO_MAX_KB: 60,
+  QUEUE_MAX: 40,
+  ENFORCE_GEOFENCE: true,
+  // Replace lat/lng with the real branch coordinates (right-click in Google Maps). radius in meters.
+  BRANCHES: [
+    {id:'almaza',  name:'City Centre Almaza', lat:30.0725, lng:31.3425, radius:250, cc:'EG'},
+    {id:'btech1',  name:'B.TECH (Branch 1)',  lat:null,    lng:null,    radius:150, cc:'EG'},
+    {id:'sharaf1', name:'Sharaf DG (Branch 1)',lat:null,   lng:null,    radius:200, cc:'AE'}
+  ]
+};
+
+/* ===================== I18N ===================== */
+const I18N = {
+ ar:{dir:'rtl',loc:'ar-EG',toggle:'English',appName:'تطبيق المروّجين',tagline:'Life\'s Good',pName:'الاسم',pId:'الرقم الوظيفي',branch:'الفرع',
+  checkIn:'تسجيل حضور',checkOut:'تسجيل انصراف',pending:'سجل بانتظار المزامنة',sync:'مزامنة',offline:'لا يوجد اتصال — سيتم الحفظ على الجهاز',
+  secNote:'يتم التحقق من الموقع والشبكة والصورة الحيّة',liveOnly:'صورة حيّة فقط',submit:'التقاط وإرسال',
+  inTitle:'تسجيل حضور',outTitle:'تسجيل انصراف',last:'آخر عملية',none:'لا توجد عمليات',
+  cCam:'الكاميرا',cGps:'الموقع (GPS)',cIp:'عنوان IP',cGeo:'نطاق الفرع',
+  wait:'جاري الفحص…',ok:'تم',bad:'فشل',denied:'مرفوضة',inside:'داخل النطاق',outside:'خارج النطاق',skip:'غير مُعرّف',
+  acc:'الدقة',busyCap:'جاري المعالجة…',busySync:'جاري المزامنة…',
+  tIn:'تم تسجيل الحضور ✓',tOut:'تم تسجيل الانصراف ✓',tQueued:'تم الحفظ محلياً وسيُرفع تلقائياً',tSynced:'تمت مزامنة السجلات ✓',
+  tErr:'تعذر الحفظ، حاول مرة أخرى',tProfile:'أدخل الاسم والرقم الوظيفي',tFull:'ذاكرة الأوفلاين ممتلئة — اتصل بالإنترنت للمزامنة',
+  tOutside:'أنت خارج نطاق الفرع المحدد',tRisk:'تم رفض الموقع (مشتبه به)',tAcc:'دقة GPS ضعيفة، انتظر قليلاً',tCam:'الكاميرا مطلوبة',
+  tOnline:'عاد الاتصال بالإنترنت',tOffline:'انقطع الاتصال',tDemo:'وضع تجريبي: أضف بيانات Supabase في الإعدادات'},
+ en:{dir:'ltr',loc:'en-GB',toggle:'عربي',appName:'Promoter App',tagline:'Life\'s Good',pName:'Name',pId:'Employee ID',branch:'Branch',
+  checkIn:'Check-In',checkOut:'Check-Out',pending:'record(s) waiting to sync',sync:'Sync',offline:'Offline — records are saved on this device',
+  secNote:'Location, network & live selfie are verified',liveOnly:'LIVE ONLY',submit:'Capture & Submit',
+  inTitle:'Check-In',outTitle:'Check-Out',last:'Last',none:'No activity yet',
+  cCam:'Camera',cGps:'Location (GPS)',cIp:'IP Address',cGeo:'Branch geofence',
+  wait:'Checking…',ok:'OK',bad:'Failed',denied:'Denied',inside:'Inside',outside:'Outside',skip:'Not set',
+  acc:'Accuracy',busyCap:'Processing…',busySync:'Syncing…',
+  tIn:'Check-In recorded ✓',tOut:'Check-Out recorded ✓',tQueued:'Saved offline — will upload automatically',tSynced:'Records synced ✓',
+  tErr:'Could not save, please retry',tProfile:'Enter your name and employee ID',tFull:'Offline storage full — connect to sync',
+  tOutside:'You are outside the selected branch',tRisk:'Location rejected (suspicious)',tAcc:'Weak GPS accuracy, wait a moment',tCam:'Camera is required',
+  tOnline:'Back online',tOffline:'Connection lost',tDemo:'Demo mode: add Supabase credentials in CONFIG'}
+};
+const $=id=>document.getElementById(id);
+let lang=localStorage.lg_lang||'ar', S={type:null,stream:null,map:null,mk:null,circ:null,gps:null,ip:null,camOk:false,checks:{}};
+const T=k=>I18N[lang][k]||k;
+
+function applyLang(){
+  const L=I18N[lang]; document.documentElement.lang=lang; document.documentElement.dir=L.dir;
+  document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=T(e.dataset.i18n));
+  $('langBtn').textContent=L.toggle; $('sheetTitle').textContent=S.type==='check_out'?T('outTitle'):T('inTitle');
+  renderChecks(); renderLast(); tick(); localStorage.lg_lang=lang;
+  if(S.map)setTimeout(()=>S.map.invalidateSize(),350);
+}
+function toggleLang(){lang=lang==='ar'?'en':'ar';applyLang()}
+$('langBtn').onclick=toggleLang;
+
+/* ===================== CLOCK ===================== */
+function tick(){
+  const l=I18N[lang].loc,d=new Date();
+  $('clock').textContent=d.toLocaleTimeString(l,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  $('date').textContent=d.toLocaleDateString(l,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+}
+setInterval(tick,1000);
+
+/* ===================== TOASTS ===================== */
+function toast(key,type='ok'){
+  const bg={ok:'#16a34a',err:'#dc2626',warn:'#d97706',info:'#2B2B2B'}[type],ic={ok:'✓',err:'✕',warn:'!',info:'i'}[type];
+  const el=document.createElement('div');el.className='toast';el.style.background=bg;
+  el.innerHTML=`<span style="margin-inline-end:8px;font-weight:900">${ic}</span>`+T(key);
+  $('toasts').appendChild(el);setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),300)},3200);
+}
+function busy(on,key){const b=$('busy');b.classList.toggle('hidden',!on);b.classList.toggle('flex',on);if(key)$('busyTxt').textContent=T(key)}
+
+/* ===================== SUPABASE ===================== */
+const CONFIGURED=CFG.SUPABASE_URL.includes('supabase.co');
+const sb=CONFIGURED?supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_KEY,{auth:{persistSession:false}}):null;
+
+/* ===================== PROFILE / UI INIT ===================== */
+const sel=$('branch');CFG.BRANCHES.forEach(b=>sel.add(new Option(b.name,b.id)));
+['pName','pId'].forEach(k=>{$(k).value=localStorage['lg_'+k]||'';$(k).oninput=e=>localStorage['lg_'+k]=e.target.value.trim()});
+sel.value=localStorage.lg_branch||CFG.BRANCHES[0].id;sel.onchange=()=>localStorage.lg_branch=sel.value;
+const branch=()=>CFG.BRANCHES.find(b=>b.id===sel.value);
+function renderLast(){const l=JSON.parse(localStorage.lg_last||'null');
+  $('lastAct').textContent=l?`${T('last')}: ${l.type==='check_in'?T('checkIn'):T('checkOut')} · ${new Date(l.t).toLocaleTimeString(I18N[lang].loc,{hour:'2-digit',minute:'2-digit'})}`:T('none')}
+
+/* ===================== NETWORK / IP ===================== */
+async function fetchIP(){
+  try{const r=await fetch('https://ipwho.is/',{cache:'no-store'});const d=await r.json();
+    if(d.success===false)throw 0;S.ip={ip:d.ip,cc:d.country_code,city:d.city,lat:d.latitude,lng:d.longitude};
+  }catch{try{const r=await fetch('https://api.ipify.org?format=json');S.ip={ip:(await r.json()).ip}}catch{S.ip=null}}
+  $('ipHome').textContent=S.ip?S.ip.ip:'—';
+  if(S.type)setCheck('ip',S.ip?'ok':'warn',S.ip?(S.ip.ip+(S.ip.cc?' · '+S.ip.cc:'')):'bad');
+}
+function setOnline(){const on=navigator.onLine;$('offbar').classList.toggle('hidden',on)}
+addEventListener('online',()=>{setOnline();toast('tOnline','ok');fetchIP();syncQueue()});
+addEventListener('offline',()=>{setOnline();toast('tOffline','warn')});
+
+/* ===================== CHECKLIST ===================== */
+const CH=['cam','gps','ip','geo'],CHK={cam:'cCam',gps:'cGps',ip:'cIp',geo:'cGeo'};
+function setCheck(id,st,txt){S.checks[id]={st,txt};renderChecks();gate()}
+function renderChecks(){
+  $('checks').innerHTML=CH.map(id=>{const c=S.checks[id]||{st:'load',txt:'wait'};
+    const i=c.st==='load'?'<i class="spin"></i>':c.st==='ok'?'<b class="text-green-600">✓</b>':c.st==='warn'?'<b class="text-amber-500">!</b>':'<b class="text-red-600">✕</b>';
+    return `<li class="flex items-center justify-between fade"><span class="text-gray-700">${T(CHK[id])}</span><span class="flex items-center gap-2 text-xs ${c.st==='bad'?'text-red-600':'text-gray-500'}">${I18N[lang][c.txt]||c.txt} ${i}</span></li>`}).join('');
+}
+function gate(){const g=S.checks.geo,ok=S.camOk&&S.gps&&S.checks.gps?.st==='ok'&&g&&g.st!=='bad';$('submit').disabled=!ok}
+
+/* ===================== CAPTURE FLOW ===================== */
+async function openCapture(type){
+  const name=$('pName').value.trim(),id=$('pId').value.trim();
+  if(!name||!id)return toast('tProfile','warn');
+  S.type=type;S.gps=null;S.camOk=false;S.checks={};$('coords').textContent='--';$('distTxt').textContent='';
+  $('sheetTitle').textContent=type==='check_out'?T('outTitle'):T('inTitle');
+  $('sheet').classList.add('open');renderChecks();gate();
+  if(S.ip)setCheck('ip','ok',S.ip.ip+(S.ip.cc?' · '+S.ip.cc:'')); else {fetchIP()}
+  startCam();setTimeout(startGPS,350);
+}
+function closeCapture(){S.type=null;$('sheet').classList.remove('open');stopCam()}
+function stopCam(){S.stream?.getTracks().forEach(t=>t.stop());S.stream=null;S.camOk=false}
+async function startCam(){
+  try{
+    S.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:960}},audio:false});
+    const v=$('cam');v.srcObject=S.stream;await v.play();S.camOk=true;setCheck('cam','ok','ok');
+  }catch{setCheck('cam','bad','denied');toast('tCam','err')}
+}
+
+/* ---------- Anti-fake GPS ---------- */
+const rad=x=>x*Math.PI/180;
+function dist(a,b,c,d){const R=6371000,dl=rad(c-a),dn=rad(d-b),x=Math.sin(dl/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
+function sampleGPS(ms){return new Promise((res,rej)=>{
+  if(!navigator.geolocation)return rej('nogeo');const s=[];let done=false;
+  const fin=()=>{if(done)return;done=true;navigator.geolocation.clearWatch(w);s.length?res(s):rej('timeout')};
+  const w=navigator.geolocation.watchPosition(p=>s.push(p),e=>{if(!s.length&&!done){done=true;navigator.geolocation.clearWatch(w);rej(e.code)}},{enableHighAccuracy:true,maximumAge:0,timeout:15000});
+  setTimeout(fin,ms);
+})}
+function analyse(samples,br){
+  const best=samples.reduce((a,b)=>b.coords.accuracy<a.coords.accuracy?b:a),c=best.coords;let risk=0,flags=[];
+  if(c.accuracy<=1){risk+=50;flags.push('PERFECT_ACC')}
+  if(samples.length>=4&&new Set(samples.map(p=>p.coords.latitude+','+p.coords.longitude)).size===1){risk+=40;flags.push('STATIC_COORDS')}
+  if(Math.abs(best.timestamp-Date.now())>60000){risk+=30;flags.push('TIME_DRIFT')}
+  if(navigator.webdriver){risk+=50;flags.push('WEBDRIVER')}
+  if(S.ip?.cc&&br.cc&&S.ip.cc!==br.cc){risk+=40;flags.push('IP_COUNTRY_MISMATCH')}
+  if(S.ip?.lat!=null&&dist(c.latitude,c.longitude,S.ip.lat,S.ip.lng)>400000){risk+=30;flags.push('IP_GPS_FAR')}
+  let d=null,inside=null;
+  if(br.lat!=null){d=dist(c.latitude,c.longitude,br.lat,br.lng);inside=d<=br.radius+Math.min(c.accuracy,40)}else flags.push('NO_GEOFENCE');
+  if(inside===false)flags.push('OUTSIDE_GEOFENCE');
+  return{lat:c.latitude,lng:c.longitude,acc:c.accuracy,risk,flags,d,inside,t:Date.now()};
+}
+async function startGPS(){
+  setCheck('gps','load','wait');setCheck('geo','load','wait');
+  if(!S.map){S.map=L.map('map',{zoomControl:false,attributionControl:false}).setView([30.05,31.25],14);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png').addTo(S.map)}
+  $('map').classList.add('on');setTimeout(()=>S.map.invalidateSize(),450);
+  const br=branch();
+  try{
+    const g=analyse(await sampleGPS(CFG.GPS_SAMPLE_MS),br);S.gps=g;
+    $('coords').textContent=`${g.lat.toFixed(5)}, ${g.lng.toFixed(5)}  ±${Math.round(g.acc)}m`;
+    S.map.flyTo([g.lat,g.lng],17,{duration:1});
+    S.mk&&S.map.removeLayer(S.mk);S.mk=L.circleMarker([g.lat,g.lng],{radius:8,color:'#fff',weight:3,fillColor:'#A50034',fillOpacity:1}).addTo(S.map);
+    S.circ&&S.map.removeLayer(S.circ);if(br.lat!=null)S.circ=L.circle([br.lat,br.lng],{radius:br.radius,color:'#A50034',weight:2,fillOpacity:.08}).addTo(S.map);
+    if(g.acc>CFG.MAX_ACCURACY_M){setCheck('gps','bad',`${T('acc')} ±${Math.round(g.acc)}m`);toast('tAcc','warn');S.gps=null}
+    else setCheck('gps',g.risk>=CFG.BLOCK_RISK?'bad':'ok',g.risk>=CFG.BLOCK_RISK?'bad':`±${Math.round(g.acc)}m`);
+    if(g.inside===null)setCheck('geo','warn','skip');
+    else{$('distTxt').textContent=Math.round(g.d)+' m';setCheck('geo',g.inside?'ok':'bad',g.inside?'inside':'outside')}
+    if(g.risk>=CFG.BLOCK_RISK){S.gps=null;toast('tRisk','err')}
+  }catch{setCheck('gps','bad','denied');setCheck('geo','bad','bad')}
+}
+
+/* ---------- Live selfie + compression ---------- */
+async function snapPhoto(){
+  const v=$('cam'),w=CFG.PHOTO_W,h=Math.round(v.videoHeight/v.videoWidth*w),c=document.createElement('canvas');c.width=w;c.height=h;
+  const x=c.getContext('2d');x.save();x.translate(w,0);x.scale(-1,1);x.drawImage(v,0,0,w,h);x.restore();
+  const b=branch(),stamp=`${new Date().toLocaleString('en-GB')} | ${b.name} | ${S.ip?.ip||'-'}`;
+  x.fillStyle='rgba(0,0,0,.55)';x.fillRect(0,h-26,w,26);x.fillStyle='#fff';x.font='bold 13px monospace';x.fillText(stamp,8,h-9);
+  let q=.7,url;do{url=c.toDataURL('image/jpeg',q);q-=.08}while(url.length*.75/1024>CFG.PHOTO_MAX_KB&&q>.25);
+  return url;
+}
+const toBlob=u=>{const [m,d]=u.split(','),bin=atob(d),a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return new Blob([a],{type:'image/jpeg'})};
+
+/* ===================== QUEUE / SYNC ===================== */
+const getQ=()=>{try{return JSON.parse(localStorage.lg_queue||'[]')}catch{return[]}};
+function setQ(q){try{localStorage.lg_queue=JSON.stringify(q);renderPending();return true}catch{return false}}
+function renderPending(){const n=getQ().length;$('pending').classList.toggle('hidden',!n);$('pendN').textContent=n}
+async function sendRecord(r,wasOffline){
+  if(!sb)throw new Error('demo');
+  const path=`${r.branch_id}/${r.work_date}/${r.client_id}.jpg`;
+  const up=await sb.storage.from(CFG.BUCKET).upload(path,toBlob(r.photo),{contentType:'image/jpeg',upsert:true});
+  if(up.error)throw up.error;
+  const {photo,...row}=r;row.photo_url=sb.storage.from(CFG.BUCKET).getPublicUrl(path).data.publicUrl;row.was_offline=wasOffline;
+  const {error}=await sb.from(CFG.TABLE).upsert(row,{onConflict:'client_id',ignoreDuplicates:true});
+  if(error)throw error;
+}
+let syncing=false;
+async function syncQueue(manual){
+  if(syncing||!navigator.onLine||!sb)return manual&&!sb&&toast('tDemo','warn');
+  let q=getQ();if(!q.length)return;syncing=true;manual&&busy(true,'busySync');let sent=0;
+  try{for(const r of [...q]){await sendRecord(r,true);q=q.filter(x=>x.client_id!==r.client_id);setQ(q);sent++}}
+  catch(e){console.warn('sync',e);manual&&toast('tErr','err')}
+  syncing=false;busy(false);if(sent)toast('tSynced','ok');
+}
+setInterval(()=>syncQueue(),30000);
+
+/* ===================== SUBMIT ===================== */
+async function submitRecord(){
+  if(!S.camOk)return toast('tCam','err');
+  if(S.gps&&Date.now()-S.gps.t>90000){busy(true,'wait');await startGPS();busy(false)}
+  const g=S.gps;if(!g)return toast('tRisk','err');
+  if(CFG.ENFORCE_GEOFENCE&&g.inside===false)return toast('tOutside','err');
+  busy(true,'busyCap');const b=branch(),now=new Date();
+  const rec={client_id:crypto.randomUUID(),promoter_id:$('pId').value.trim(),promoter_name:$('pName').value.trim(),
+    branch_id:b.id,branch_name:b.name,action_type:S.type,captured_at:now.toISOString(),
+    work_date:`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`,
+    latitude:g.lat,longitude:g.lng,accuracy_m:Math.round(g.acc*10)/10,distance_m:g.d==null?null:Math.round(g.d),inside_geofence:g.inside,
+    ip_address:S.ip?.ip||null,ip_country:S.ip?.cc||null,ip_city:S.ip?.city||null,risk_score:g.risk,flags:g.flags.join(',')||null,
+    device_info:navigator.userAgent.slice(0,180),photo:await snapPhoto()};
+  let sent=false;
+  if(navigator.onLine&&sb){try{await sendRecord(rec,false);sent=true}catch(e){console.warn('send failed, queueing',e)}}
+  if(!sent){
+    const q=getQ();
+    if(q.length>=CFG.QUEUE_MAX||!(q.push(rec),setQ(q))){busy(false);return toast('tFull','err')}
+    toast(sb?'tQueued':'tDemo','warn');
+  }else toast(S.type==='check_in'?'tIn':'tOut','ok');
+  localStorage.lg_last=JSON.stringify({type:S.type,t:Date.now()});renderLast();busy(false);closeCapture();
+}
+
+/* ===================== BOOT ===================== */
+addEventListener('load',()=>{applyLang();setOnline();renderPending();fetchIP();syncQueue()});
+</script>
+</body>
+</html>
